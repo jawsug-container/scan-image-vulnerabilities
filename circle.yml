@@ -1,0 +1,12 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: docker:18.09.5-git
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Run tests
+          command: |
+            docker run --rm -it -v $(pwd):/work -e IGNORE_PATH=/vendor/ supinf/shellcheck:0.x

@@ -1,0 +1,438 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "vulnerability scanning services"
+
+Outputs:
+  PublicIP:
+    Value: !Sub "for id in $( aws --region ${AWS::Region} autoscaling describe-auto-scaling-instances --query \"AutoScalingInstances[?AutoScalingGroupName=='${AutoScalingGroup}'].InstanceId\" --output text ); do aws --region ${AWS::Region} ec2 describe-instances --instance-ids $id --query \"Reservations[0].Instances[0].PublicIpAddress\" --output=text; done"
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC Configuration
+        Parameters:
+          - VpcCIDR
+      - Label:
+          default: EC2 Configuration
+        Parameters:
+          - InstanceType
+      - Label:
+          default: Clair Configurations
+        Parameters:
+          - ClairContainerCpu
+          - ClairContainerMemory
+          - ClairLogRetentionInDays
+      - Label:
+          default: Trivy Configurations
+        Parameters:
+          - TrivyContainerCpu
+          - TrivyContainerMemory
+          - TrivyLogRetentionInDays
+
+Parameters:
+  VpcCIDR: 
+    Description: Please enter the IP range for this VPC (X.X.X.0/24)
+    Type: String
+    MinLength: 4
+    MaxLength: 11
+    Default: 10.0.0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})"
+
+  InstanceType:
+    Description: Which instance type should we use to build the batch cluster?
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+
+  ECSAMI:
+    Description: AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+
+  ClairContainerCpu:
+    Type: Number
+    Description: Amount of CPU for the Clair container
+    Default: 512
+
+  ClairContainerMemory:
+    Type: Number
+    Description: Amount of memory for the Clair container
+    Default: 1024
+
+  ClairLogRetentionInDays:
+    Description: Log retention days
+    Type: Number
+    Default: 1
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+
+  TrivyContainerCpu:
+    Type: Number
+    Description: Amount of CPU for the Trivy container
+    Default: 256
+
+  TrivyContainerMemory:
+    Type: Number
+    Description: Amount of memory for the Trivy container
+    Default: 512
+
+  TrivyLogRetentionInDays:
+    Description: Log retention days
+    Type: Number
+    Default: 1
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref AWS::StackName
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Path: /
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+
+  ClairLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref ClairLogRetentionInDays
+
+  ClairTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: clair
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - EC2
+      ContainerDefinitions:
+        - Name: api
+          Image: supinf/clair:2.0-with-db
+          PortMappings:
+            - ContainerPort: 6060
+              HostPort: 6060
+              Protocol: tcp
+          Cpu: !Ref ClairContainerCpu
+          MemoryReservation: !Ref ClairContainerMemory
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ClairLogs
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+          Essential: true
+
+  ClairService:
+    Type: AWS::ECS::Service
+    DependsOn: AutoScalingGroup
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: EC2
+      TaskDefinition: !Ref ClairTask
+      PlacementStrategies:
+        - Type: spread
+          Field: attribute:ecs.availability-zone
+        - Type: binpack
+          Field: cpu
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 0
+
+  TrivyLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref TrivyLogRetentionInDays
+
+  TrivyTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: trivy
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - EC2
+      ContainerDefinitions:
+        - Name: api
+          Image: pottava/trivy:0.0.16
+          PortMappings:
+            - ContainerPort: 9000
+              HostPort: 9000
+              Protocol: tcp
+          Cpu: !Ref TrivyContainerCpu
+          MemoryReservation: !Ref TrivyContainerMemory
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref TrivyLogs
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+          Essential: true
+
+  TrivyService:
+    Type: AWS::ECS::Service
+    DependsOn: AutoScalingGroup
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: EC2
+      TaskDefinition: !Ref TrivyTask
+      PlacementStrategies:
+        - Type: spread
+          Field: attribute:ecs.availability-zone
+        - Type: binpack
+          Field: cpu
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 0
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: ec2.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+      Path: /
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      LaunchConfigurationName: !Ref LaunchConfig
+      DesiredCapacity: 1
+      MaxSize: 2
+      MinSize: 0
+      MetricsCollection:
+        - Granularity: 1Minute
+      HealthCheckGracePeriod: 30
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+          PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal: 
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT15M
+        WaitOnResourceSignals: true
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn: Cluster
+    Properties:
+      ImageId: !Ref ECSAMI
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups:
+        - !Ref SecurityGroupPublic
+        - !Ref SecurityGroupInternal
+      AssociatePublicIpAddress: true
+      UserData:
+        "Fn::Base64": !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource LaunchConfig
+            /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource AutoScalingGroup
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - Common
+        Common:
+          files:
+            "/etc/ecs/ecs.config":
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                  ECS_CLUSTER=${Cluster}
+                  ECS_AVAILABLE_LOGGING_DRIVERS=["json-file","awslogs"]
+            "/etc/cfn/cfn-hup.conf":
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                  [main]
+                  stack=${AWS::StackId}
+                  region=${AWS::Region}
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                  [cfn-auto-reloader-hook]
+                  triggers=post.update
+                  path=Resources.LaunchConfig.Metadata.AWS::CloudFormation::Init
+                  action=/opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource LaunchConfig
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+
+  SecurityGroupPublic:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup for public access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6060
+          ToPort: 6060
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '$(AWS::StackName)-PublicAccess'
+
+  SecurityGroupInternal:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup for ec2 instances
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - CidrIp: !Sub ${VpcCIDR}.0/24
+          IpProtocol: -1
+      Tags:
+        - Key: Name
+          Value: !Sub '$(AWS::StackName)-InternalAccess'
+
+  SecurityGroupInternalIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroupInternal
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref SecurityGroupInternal
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !Sub ${VpcCIDR}.0/24
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      CidrBlock: !Sub ${VpcCIDR}.0/25
+      Tags:
+        - Key: Name
+          Value: "Public Subnet 1"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      CidrBlock: !Sub ${VpcCIDR}.128/25
+      Tags:
+        - Key: Name
+          Value: "Public Subnet 2"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '$(AWS::StackName)-Public'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      GatewayId: !Ref InternetGateway
+      DestinationCidrBlock: 0.0.0.0/0
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: AttachGateway
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: AttachGateway
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
