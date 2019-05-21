@@ -1,5 +1,7 @@
 # Docker イメージ脆弱性診断
 
+[![CircleCI](https://circleci.com/gh/jawsug-container/scan-image-vulnerabilities.svg?style=svg)](https://circleci.com/gh/jawsug-container/scan-image-vulnerabilities)
+
 ## 免責事項
 
 本リポジトリは Docker イメージの脆弱性を診断する手法の一例を紹介するものであり  

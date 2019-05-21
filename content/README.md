@@ -30,7 +30,7 @@ $ docker run --rm -it -e AWS_DEFAULT_REGION=ap-northeast-1 \
      -v /var/run/docker.sock:/var/run/docker.sock \
      -v scan-images:/root/config \
      -v $HOME/.aws:/root/.aws \
-     -p 8080:8080 jawsug/container:scan-images
+     -p 8080:8080 jawsug/container:scan-images-fixed
 ```
 
 ### 4. ブラウザで環境に接続します

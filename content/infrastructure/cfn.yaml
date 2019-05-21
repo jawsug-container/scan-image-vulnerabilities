@@ -181,7 +181,7 @@ Resources:
         - EC2
       ContainerDefinitions:
         - Name: api
-          Image: pottava/trivy:0.0.16
+          Image: pottava/trivy:0.1-db
           PortMappings:
             - ContainerPort: 9000
               HostPort: 9000
