@@ -12,9 +12,6 @@
 1. [Clair](https://github.com/coreos/clair) と [Trivy](https://github.com/knqyf263/trivy) サーバーを起動
 2. Clair 編: [Klar](https://github.com/optiopay/klar) で Docker イメージを脆弱性スキャン
 3. Trivy 編: curl で Docker イメージを脆弱性スキャン
-4. (Option) サーバーを冗長化する
-5. (Option) サーバーに認証をかける
-6. (Option) 定期スキャンを実施する
 
 ## 前提条件
 
